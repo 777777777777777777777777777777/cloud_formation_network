@@ -1,0 +1,319 @@
+# VPC, Subnets, RouteTables, Internet Gateway, NAT Instance
+#
+# Version - 1.0
+# 
+# Date - 19.06.2019         
+AWSTemplateFormatVersion: 2010-09-09
+Description: "VPC, Subnets, RouteTables, Internet Gateway, NAT Instance"
+
+Metadata:
+ AWS::CloudFormation::Interface: 
+  ParameterGroups: 
+   - 
+    Label: 
+     default: "Network Config"
+    Parameters: 
+     - NetworkName
+     - VPC1
+     - VPCManagement
+   -
+    Label:
+     default: "Subnets mask"
+    Parameters:
+     - PUBLICSubnet
+     - PRIVATESubnet
+     - DATABASESubnet
+              
+Parameters:
+ NetworkName:
+  Type: String
+  Default: "SuperNetworkTESTING"
+  
+ VPC1:
+  Type: String
+  Default: '10.0.0.0/16'
+  
+ VPCManagement:
+  Type: String
+  Default: '192.0.0.0/16'
+
+ PUBLICSubnet: 
+  Type: String
+  Default: '10.0.11.0/24'
+  Description: "Public Subnet CIDR"
+  
+ PRIVATESubnet: 
+  Type: String
+  Default: '10.0.21.0/24'
+  Description: "Private Subnet CIDR"
+    
+ DATABASESubnet: 
+  Type: String
+  Default: '192.0.31.0/24'
+  Description: "Database Subnet CIDR"
+
+Resources:
+
+###########################################
+################## VPC #################
+####################################
+
+ VPCNumberUno:
+  Type: AWS::EC2::VPC
+  Properties:            ############### First CIDR 
+   CidrBlock: !Ref VPC1             
+   EnableDnsSupport: true
+   EnableDnsHostnames: true
+   Tags:
+    - Key: Name
+      Value: !Ref NetworkName
+  
+ VPCForDatabase:                  ############ Second CIDR
+  Type: "AWS::EC2::VPCCidrBlock"
+  DependsOn: VPCNumberUno
+#  DeletionPolicy: Delete
+  Properties: 
+   CidrBlock: !Ref VPCManagement
+   VpcId: !Ref VPCNumberUno         
+   
+###########################################       
+###################### Internet Gateway ################
+##############################################
+
+ SuperInternetGateway:
+  Type: "AWS::EC2::InternetGateway"
+  Properties: 
+   Tags:
+    - Key: Name
+      Value: !Ref NetworkName
+
+ AttachSuperInternetGateway:                  ###### Attach IGW to VPC
+  Type: "AWS::EC2::VPCGatewayAttachment"
+  Properties:
+   VpcId:  !Ref VPCNumberUno
+   InternetGatewayId: !Ref SuperInternetGateway
+
+####################################### 
+################ PUBLIC RouteTable ########	  
+###############################################
+
+ RouteTableForPUBLICSubnet:              ####### Create Empty RouteTable
+  Type: "AWS::EC2::RouteTable"                    
+  Properties:
+   VpcId: !Ref VPCNumberUno
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, PUBLICRouteTable ] ]
+
+          
+ RoutesForPUBLICRouteTable:             ######## Creat and Attach Routes for RouteTable
+  Type: "AWS::EC2::Route"
+  DependsOn: AttachSuperInternetGateway
+  Properties: 
+   DestinationCidrBlock: 0.0.0.0/0
+   GatewayId: !Ref SuperInternetGateway
+   RouteTableId: !Ref RouteTableForPUBLICSubnet
+
+##########################################   
+################### PRIVATE RouteTable #########
+##########################################
+
+ RouteTableForPRIVATESubnet:
+  Type: "AWS::EC2::RouteTable"
+  Properties:
+   VpcId: !Ref VPCNumberUno
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, "PRIVATERouteTable" ] ]
+             
+ RoutesForPRIVATERouteTable:
+  Type: "AWS::EC2::Route"
+  DependsOn: NATinstance
+  Properties:
+   DestinationCidrBlock: 0.0.0.0/0
+   RouteTableId: !Ref RouteTableForPRIVATESubnet
+   InstanceId: !Ref NATinstance
+
+##########################################   
+################### DATABASE RouteTable #########
+##########################################
+ 
+ RouteTableForDATABASE:
+  Type: "AWS::EC2::RouteTable"
+  Properties:
+   VpcId: !Ref VPCNumberUno
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, "DATABASERouteTable" ] ]
+
+   
+###########################################   
+################### NAT instance #########
+################(I change ssh port)##########################
+
+ NATinstance:
+  Type: "AWS::EC2::Instance"
+  Properties:
+   SecurityGroupIds:  
+    - !Ref NatinstanceSecurityGroup
+   KeyName: "Paris-key"
+   ImageId: ami-05b93cd5a1b552734
+   InstanceType: t2.micro
+   SubnetId: !Ref SubnetPUBLIC
+   SourceDestCheck: false
+   UserData:
+    Fn::Base64: !Sub |
+     #!/bin/bash -ex
+     perl -pi -e 's/^#?Port 22$/Port 23/' /etc/ssh/sshdconfig
+     service sshd restart 
+     perl -pi -e 's/^#?net.ipv4.ipforward = 0$/net.ipv4.ipforward = 1/' /etc/sysctl.conf
+     sysctl -p
+     iptables -t nat -A POSTROUTING -o eth0 -s 10.0.0.0/16 -j MASQUERADE
+   Tags:
+    - Key: Name
+      Value: SuperNATinstance
+#   PublicIp: !Ref Elasticip 
+
+ NatinstanceSecurityGroup:
+  Type: AWS::EC2::SecurityGroup
+  Properties: 
+   GroupDescription: "SSH 23 localnet all"
+   GroupName: NATInstanceSecurity
+   VpcId: !Ref VPCNumberUno
+   SecurityGroupIngress: 
+    - IpProtocol: -1
+     # FromPort: 80
+     # ToPort: 80
+      CidrIp: !Ref VPC1
+    - IpProtocol: -1
+     # FromPort: 80
+     # ToPort: 80
+      CidrIp: !Ref VPCManagement
+    - IpProtocol: tcp
+      FromPort: 23
+      ToPort: 23
+      CidrIp: x.x.x.x/32      
+#------------ ^ Your IP to Connect to the Nat Instance/Bastion --------------------
+   Tags: 
+    - Key: Name
+      Value: SuperNATInstanceSecurityGroup
+
+
+################# Associate PUBLIC Route for PUBLIC Subnet #########
+ 
+ RouteAssociationPUBLIC:
+  Type: "AWS::EC2::SubnetRouteTableAssociation"
+  Properties:
+   RouteTableId: !Ref RouteTableForPUBLICSubnet
+   SubnetId: !Ref SubnetPUBLIC                         
+   
+############# Associate PRIVATE Route for PRIVATE Subnet ############
+ RouteAssociationPRIVATE:
+  Type: "AWS::EC2::SubnetRouteTableAssociation"
+  Properties:
+   RouteTableId: !Ref RouteTableForPRIVATESubnet
+   SubnetId: !Ref SubnetPRIVATE
+
+############# Route Association for Internal only - DATABASE ###### 
+
+ RouteAssociationDATABASE: 
+  Type: "AWS::EC2::SubnetRouteTableAssociation"
+  Properties:
+   RouteTableId: !Ref RouteTableForDATABASE
+   SubnetId: !Ref SubnetDATABASE
+
+############## Elastic ip for NAT instance ###############   
+# Elasticip:
+#  Type: "AWS::EC2::EIP"
+#  DependsOn : SuperInternetGateway
+#  Properties:
+#   Domain: !Ref VPCNumberUno
+#   InstanceId: !Ref NATinstance
+
+##################################################################
+#################################### ALL Subnets ################################
+#########################################################################
+
+ SubnetPUBLIC:
+  Type: "AWS::EC2::Subnet"
+  Properties: 
+   VpcId: !Ref VPCNumberUno
+   AvailabilityZone: !Select [ 0, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+   CidrBlock: !Ref "PUBLICSubnet"
+   MapPublicIpOnLaunch: true
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, "PUBLIC" ] ]
+
+ SubnetPRIVATE:
+  Type: "AWS::EC2::Subnet"
+  Properties: 
+   VpcId: !Ref VPCNumberUno
+   AvailabilityZone: !Select [ 0, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+   CidrBlock: !Ref "PRIVATESubnet"
+   MapPublicIpOnLaunch: false
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, "PRIVATE" ] ]
+      
+ SubnetDATABASE:
+  Type: "AWS::EC2::Subnet"
+  DependsOn: VPCForDatabase
+  Properties: 
+   VpcId: !Ref VPCNumberUno
+   AvailabilityZone: !Select [ 0, "Fn::GetAZs": { Ref: "AWS::Region" } ]
+   CidrBlock: !Ref "DATABASESubnet"
+   MapPublicIpOnLaunch: false
+   Tags:
+    - Key: Name
+      Value: !Join [ ":", [ !Ref NetworkName, "DATABASE" ] ]
+      
+#####################################################################
+#################### OUTPUTS ############################
+##################################################
+
+Outputs:
+ VPCID:
+  Description: ID Of VPC
+  Value: !Ref VPCNumberUno
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "VPC" ] ]
+      
+      
+ NatInstanceID:
+    Description: NAT Instance ID
+    Value: !Ref NATinstance
+    Export:
+     Name: !Join [ "-", [ !Ref "NetworkName", "NATInstance" ] ]
+
+     
+ 1VPCBlock:
+  Description: Primary CIDR block Of VPC
+  Value: !GetAtt VPCNumberUno.CidrBlock
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "VpcCIDR1" ] ]
+      
+ 2VPCBlock:
+  Description: Database CIDR block Of VPC
+  Value: !Ref VPCForDatabase
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "VpcCIDR2forDatabase" ] ]
+ 
+ 
+ PublicSub:
+  Description: ID Public Subnet
+  Value: !Ref PUBLICSubnet
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "PublicSubnet" ] ]
+
+ PrivateSub:
+  Description: ID Private Subnet
+  Value: !Ref PRIVATESubnet
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "PrivateSubnet" ] ]
+
+ DatabaseSub:
+  Description: ID Database Subnet 
+  Value: !Ref DATABASESubnet
+  Export:
+   Name: !Join [ "-", [ !Ref "NetworkName", "DatabaseSubnet" ] ]
